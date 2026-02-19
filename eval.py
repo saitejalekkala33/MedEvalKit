@@ -24,7 +24,8 @@ def set_seed(seed_value):
     torch.backends.cudnn.benchmark = False
 
 def parse_eval_datasets(datasets_str):
-    return datasets_str.split(',')
+    # Accept comma-separated names with optional spaces.
+    return [item.strip() for item in datasets_str.split(",") if item.strip()]
 
 def main():
     parser = ArgumentParser()

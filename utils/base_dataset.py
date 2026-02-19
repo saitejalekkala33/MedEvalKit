@@ -7,38 +7,61 @@ import gc
 
 from .utils import save_json
 
+def _parse_bool(value, default=False):
+  if value is None:
+    return default
+  return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _get_eval_batch_size():
+  batch_size_str = os.environ.get("EVAL_BATCH_SIZE")
+  if batch_size_str is not None:
+    try:
+      return max(1, int(batch_size_str))
+    except ValueError:
+      pass
+  return 256 if os.environ.get("use_vllm", "True") == "True" else 1
+
+
 class BaseDataset:
   def __init__(self):
     self.chunk_idx = int(os.environ.get("chunk_idx",0))
     self.num_chunks = int(os.environ.get("num_chunks",1))
 
-  def run(self,samples,model,batch_size = 2000):
+  def run(self,samples,model,batch_size=None,checkpoint_path=None):
+    if batch_size is None:
+      batch_size = _get_eval_batch_size()
+
+    save_each_sample = _parse_bool(os.environ.get("EVAL_SAVE_EACH_SAMPLE"), default=(batch_size == 1))
+    save_every = max(1, int(os.environ.get("EVAL_SAVE_EVERY", 20)))
+
     out_samples = []
     with torch.no_grad():
-        messages_list = []
-        current_messages = []
-        current_samples = []
-        for sample in tqdm(samples):
-            messages = sample["messages"]
-            current_messages.append(messages)
-            current_samples.append(sample)
-            if len(current_messages) >= batch_size:
-                messages_list.append([current_messages,current_samples])
-                current_messages = []
-                current_samples = []
-        if current_messages:
-            messages_list.append([current_messages,current_samples])
-        
-        for current_messages,current_samples in tqdm(messages_list):
+        total_batches = (len(samples) + batch_size - 1) // batch_size
+        for batch_idx in tqdm(range(total_batches), desc=f"infer (bs={batch_size})"):
+            start = batch_idx * batch_size
+            end = min(start + batch_size, len(samples))
+            current_samples = samples[start:end]
+            current_messages = [sample["messages"] for sample in current_samples]
             outputs = model.generate_outputs(current_messages)
             try:
                 for sample,response in zip(current_samples,outputs):
                     del sample["messages"]
                     sample["response"] = response
-                    out_samples.append(sample)   
+                    out_samples.append(sample)
+
+                    if checkpoint_path is not None and save_each_sample:
+                        save_json(checkpoint_path, out_samples)
             except Exception as e:
                 from pdb import set_trace;set_trace()
                 print(e)
+
+            if (
+                checkpoint_path is not None
+                and not save_each_sample
+                and ((batch_idx + 1) % save_every == 0 or batch_idx + 1 == total_batches)
+            ):
+                save_json(checkpoint_path, out_samples)
             gc.collect()
     return out_samples
 
@@ -60,7 +83,7 @@ class BaseDataset:
       if num_chunks == 1:
           results_path = os.path.join(output_path,"results.json")
           matric_path = os.path.join(output_path,"metrics.json")
-          out_samples = self.run(self.samples,model)
+          out_samples = self.run(self.samples,model,checkpoint_path=results_path)
           save_json(results_path,out_samples)
 
           metrics,out_samples = self.cal_metrics(out_samples)
@@ -71,7 +94,7 @@ class BaseDataset:
       elif num_chunks > 1:
         results_path = os.path.join(output_path,f"results_{chunk_idx}.json")
         final_results_path = os.path.join(output_path,"results.json")
-        out_samples = self.run(self.samples,model)
+        out_samples = self.run(self.samples,model,checkpoint_path=results_path)
         save_json(results_path,out_samples)
 
         total_results_path = os.listdir(output_path)

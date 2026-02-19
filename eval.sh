@@ -28,7 +28,7 @@ TOP_P=0.0001
 REPETITION_PENALTY=1
 
 # LLM judge setting
-USE_LLM_JUDGE="True"
+USE_LLM_JUDGE="False"
 # gpt api model name
 GPT_MODEL="gpt-4.1-2025-04-14"
 JUDGE_MODEL_TYPE="openai"  # openai or gemini or deepseek or claude
@@ -37,7 +37,7 @@ BASE_URL=""
 
 
 # pass hyperparameters and run python sccript
-python eval.py \
+python3 eval.py \
     --eval_datasets "$EVAL_DATASETS" \
     --datasets_path "$DATASETS_PATH" \
     --output_path "$OUTPUT_PATH" \
@@ -59,4 +59,4 @@ python eval.py \
     --judge_model "$GPT_MODEL" \
     --api_key "$API_KEY" \
     --base_url "$BASE_URL" \
-    --test_times "$TEST_TIMES" \
+    --test_times "$TEST_TIMES"

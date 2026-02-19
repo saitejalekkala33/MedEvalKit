@@ -14,38 +14,76 @@ from .eval_utils import evaluate,parse_multi_choice_response, parse_open_respons
 from ..utils import extract
 
 
-def run_model(samples, model,):
+def _parse_bool(value, default=False):
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _get_batch_size():
+    batch_size_str = os.environ.get("MMMU_BATCH_SIZE")
+    if batch_size_str is not None:
+        try:
+            return max(1, int(batch_size_str))
+        except ValueError:
+            pass
+    return 256 if os.environ.get("use_vllm", "True") == "True" else 1
+
+
+def _save_each_sample():
+    return _parse_bool(os.environ.get("MMMU_SAVE_EACH_SAMPLE"), default=True)
+
+
+def _build_messages(sample):
+    messages = {"prompt": sample["final_input_prompt"]}
+    if sample.get("image", None) is not None:
+        messages["image"] = sample["image"]
+    return messages
+
+
+def run_model(samples, model, results_path=None, response_path=None):
     out_samples = {}
     out_response = {}
+    batch_size = _get_batch_size()
+    save_each_sample = _save_each_sample()
+    save_every = max(1, int(os.environ.get("MMMU_SAVE_EVERY", 50)))
+
     with torch.no_grad():
-        messages_list = []
-        current_messages = []
-        current_samples = []
-        for sample in tqdm(samples):
-            messages = {"prompt":sample["final_input_prompt"],"image":sample["image"]}
-            current_messages.append(messages)
-            current_samples.append(sample)
-            if len(current_messages) >= 2000:
-                messages_list.append([current_messages,current_samples])
-                current_messages = []
-                current_samples = []
-        if current_messages:
-            messages_list.append([current_messages,current_samples])
-        
-        for current_messages,current_samples in tqdm(messages_list):
+        total_batches = (len(samples) + batch_size - 1) // batch_size
+        for batch_idx in tqdm(range(total_batches), desc=f"MMMU test infer (bs={batch_size})"):
+            start = batch_idx * batch_size
+            end = min(start + batch_size, len(samples))
+            current_samples = samples[start:end]
+            current_messages = [_build_messages(sample) for sample in current_samples]
             outputs = model.generate_outputs(current_messages)
-            for sample,response in zip(current_samples,outputs):
+            for sample, response in zip(current_samples, outputs):
                 if "<answer>" in response:
-                    response = extract(response,"answer")
+                    response = extract(response, "answer")
                 if extract_boxed_content(response) != "None":
                     response = extract_boxed_content(response)
                 if sample["question_type"] == "multiple-choice":
-                    pred_ans = parse_multi_choice_response(response,sample["all_choices"],sample["index2ans"])
+                    pred_ans = parse_multi_choice_response(
+                        response, sample["all_choices"], sample["index2ans"]
+                    )
                 else:
                     pred_ans = response
-                out_samples[sample['id']] = pred_ans    
-                out_response[sample['id']] = response  
-    return out_samples,out_response
+                out_samples[sample["id"]] = pred_ans
+                out_response[sample["id"]] = response
+
+                if results_path is not None and response_path is not None and save_each_sample:
+                    save_json(results_path, out_samples)
+                    save_json(response_path, out_response)
+
+            if (
+                results_path is not None
+                and response_path is not None
+                and not save_each_sample
+                and ((batch_idx + 1) % save_every == 0 or batch_idx + 1 == total_batches)
+            ):
+                save_json(results_path, out_samples)
+                save_json(response_path, out_response)
+
+    return out_samples, out_response
 
 
 def eval_MMMU_test(model,dataset_path,output_path,subset):
@@ -67,7 +105,12 @@ def eval_MMMU_test(model,dataset_path,output_path,subset):
     if num_chunks == 1:
         results_path = os.path.join(output_path,"results.json")
         response_path = os.path.join(output_path,"response.json")
-        out_samples,out_response = run_model(samples,model)
+        out_samples,out_response = run_model(
+            samples,
+            model,
+            results_path=results_path,
+            response_path=response_path,
+        )
         save_json(results_path,out_samples)
         save_json(response_path,out_response)
         return "please upload in https://eval.ai/web/challenges/challenge-page/2179/leaderboard to get the results"
@@ -75,7 +118,12 @@ def eval_MMMU_test(model,dataset_path,output_path,subset):
     elif num_chunks > 1:
         results_path = os.path.join(output_path,f"results_{chunk_idx}.json")
         response_path = os.path.join(output_path,f"response_{chunk_idx}.json")
-        out_samples,out_response = run_model(samples,model)
+        out_samples,out_response = run_model(
+            samples,
+            model,
+            results_path=results_path,
+            response_path=response_path,
+        )
         save_json(results_path,out_samples)
         save_json(response_path,out_response)
 
@@ -98,4 +146,3 @@ def eval_MMMU_test(model,dataset_path,output_path,subset):
             return "please upload in https://eval.ai/web/challenges/challenge-page/2179/leaderboard to get the results"
     else:
         raise ValueError("num_chunks must be greater than 0")
-

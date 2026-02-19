@@ -13,41 +13,53 @@ from .data_utils import load_yaml, construct_prompt, save_json, process_single_s
 from .eval_utils import evaluate,parse_multi_choice_response, parse_open_response
 from ..utils import extract
 
-def run_model(samples, model,):
-    out_samples = []
-    with torch.no_grad():
-        messages_list = []
-        current_messages = []
-        current_samples = []
-        for sample in tqdm(samples):
-            messages = {"prompt":sample["final_input_prompt"],"image":sample["image"]}
-            current_messages.append(messages)
-            current_samples.append(sample)
-            if len(current_messages) >= 2000:
-                messages_list.append([current_messages,current_samples])
-                current_messages = []
-                current_samples = []
-        if current_messages:
-            messages_list.append([current_messages,current_samples])
+def _get_batch_size():
+    batch_size_str = os.environ.get("MMMU_BATCH_SIZE")
+    if batch_size_str is not None:
+        try:
+            return max(1, int(batch_size_str))
+        except ValueError:
+            pass
+    return 256 if os.environ.get("use_vllm", "True") == "True" else 1
 
-        for current_messages,current_samples in tqdm(messages_list):
+
+def _build_messages(sample):
+    messages = {"prompt": sample["final_input_prompt"]}
+    if sample.get("image", None) is not None:
+        messages["image"] = sample["image"]
+    return messages
+
+
+def run_model(samples, model):
+    out_samples = []
+    batch_size = _get_batch_size()
+
+    with torch.no_grad():
+        total_batches = (len(samples) + batch_size - 1) // batch_size
+        for batch_idx in tqdm(range(total_batches), desc=f"MMMU val infer (bs={batch_size})"):
+            start = batch_idx * batch_size
+            end = min(start + batch_size, len(samples))
+            current_samples = samples[start:end]
+            current_messages = [_build_messages(sample) for sample in current_samples]
             outputs = model.generate_outputs(current_messages)
-            for sample,response in zip(current_samples,outputs):
+            for sample, response in zip(current_samples, outputs):
                 out_sample = {
-                    "id":sample['id'],
-                    "question_type":sample['question_type'],
+                    "id":sample["id"],
+                    "question_type":sample["question_type"],
                     "answer":sample["answer"]
                 }
                 if "<answer>" in response:
-                    response = extract(response,"answer")
+                    response = extract(response, "answer")
                 if extract_boxed_content(response) != "None":
                     response = extract_boxed_content(response)
 
-                if sample['question_type'] == 'multiple-choice':
+                if sample["question_type"] == "multiple-choice":
                     out_sample["all_choices"] = sample["all_choices"]
                     out_sample["index2ans"] = sample["index2ans"]
                     out_sample["response"] = response
-                    out_sample["parsed_pred"] = parse_multi_choice_response(response, sample['all_choices'], sample['index2ans'])
+                    out_sample["parsed_pred"] = parse_multi_choice_response(
+                        response, sample["all_choices"], sample["index2ans"]
+                    )
                 else:  # open question
                     out_sample["response"] = response
                     out_sample["parsed_pred"] = response

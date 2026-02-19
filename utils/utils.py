@@ -9,7 +9,10 @@ import difflib
 import asyncio
 import random
 
-from google import genai
+try:
+    from google import genai
+except ImportError:
+    genai = None
 from tqdm import tqdm
 from tqdm.asyncio import tqdm_asyncio
 from nltk.translate.meteor_score import single_meteor_score
@@ -359,6 +362,11 @@ class openai_llm:
 
 class Gemini:
     def __init__(self,model = "gemini-2.0-flash") -> None:
+        if genai is None:
+            raise ImportError(
+                "google-genai is required for Gemini judge backend. "
+                "Install it with: pip install google-genai"
+            )
         self.model = model
         self.api_key = os.environ.get("api_key")
 

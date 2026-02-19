@@ -27,8 +27,20 @@ from utils import (
 
 #eval_MedQA_USMLE
 def prepare_benchmark(model,eval_dataset,eval_dataset_path,eval_output_path):
+    alias_map = {
+        "MedQA-USMLE": "MedQA_USMLE",
+        "Medbullets-op4": "Medbullets_op4",
+        "Medbullets-op5": "Medbullets_op5",
+        "PATH-VQA": "PATH_VQA",
+        "VQA-RAD": "VQA_RAD",
+        "MedXpertQA-text": "MedXpertQA-Text",
+        "MedXpertQA-Text": "MedXpertQA-Text",
+        "PubmedQA": "PubMedQA",
+    }
+    eval_dataset = alias_map.get(eval_dataset, eval_dataset)
+
     # Hallu,Geometry3k
-    supported_dataset = ["MMMU-Medical-test","MMMU-Medical-val","PATH_VQA","PMC_VQA","VQA_RAD","SLAKE","MedQA_USMLE","MedMCQA","PubMedQA","OmniMedVQA","Medbullets_op4","Medbullets_op5","MedXpertQA-Text","MedXpertQA-MM","SuperGPQA""HealthBench","IU_XRAY","CheXpert_Plus","MIMIC_CXR","CMB","CMExam","CMMLU","MedQA_MCMLE","MedFrameQA"]
+    supported_dataset = ["MMMU-Medical-test","MMMU-Medical-val","PATH_VQA","PMC_VQA","VQA_RAD","SLAKE","MedQA_USMLE","MedMCQA","PubMedQA","OmniMedVQA","Medbullets_op4","Medbullets_op5","MedXpertQA-Text","MedXpertQA-MM","SuperGPQA","HealthBench","IU_XRAY","CheXpert_Plus","MIMIC_CXR","CMB","CMExam","CMMLU","MedQA_MCMLE","MedFrameQA"]
 
     if eval_dataset in ["MMMU-Medical-test", "MMMU-Medical-val"]:
         if eval_dataset_path:
