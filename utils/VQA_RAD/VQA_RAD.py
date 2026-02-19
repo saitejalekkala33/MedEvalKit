@@ -34,6 +34,20 @@ class VQA_RAD(BaseDataset):
                 self.samples.append(sample)
         return self.samples
 
+    def _parse_bool(self, value, default=False):
+        if value is None:
+            return default
+        return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    def _get_eval_batch_size(self):
+        batch_size_str = os.environ.get("EVAL_BATCH_SIZE")
+        if batch_size_str is not None:
+            try:
+                return max(1, int(batch_size_str))
+            except ValueError:
+                pass
+        return 256 if os.environ.get("use_vllm", "True") == "True" else 1
+
     def construct_messages(self,sample):
         question = sample["question"]
         image = sample["image"]
@@ -51,6 +65,76 @@ class VQA_RAD(BaseDataset):
         sample["messages"] = messages
         del sample["image"]
         return sample
+
+    def _split_thinking_and_response(self, response):
+        raw_response = "" if response is None else str(response)
+
+        thinking = ""
+        extracted_thinking = extract(raw_response, "think", hard=False).strip()
+        if extracted_thinking:
+            thinking = extracted_thinking
+        elif "</think>" in raw_response:
+            thinking = raw_response.split("</think>", 1)[0].strip()
+            if thinking.startswith("<think>"):
+                thinking = thinking[len("<think>") :].strip()
+        elif "<answer>" in raw_response:
+            thinking = raw_response.split("<answer>", 1)[0].strip()
+            if thinking.startswith("<think>"):
+                thinking = thinking[len("<think>") :].strip()
+
+        parsed_response = raw_response
+        boxed_answer = extract_boxed_content(raw_response)
+        if boxed_answer != "None":
+            parsed_response = boxed_answer
+        else:
+            tagged_answer = extract(raw_response, "answer", hard=False).strip()
+            if tagged_answer:
+                parsed_response = tagged_answer
+
+        return thinking, parsed_response.strip()
+
+    def run(self, samples, model, batch_size=None, checkpoint_path=None):
+        if batch_size is None:
+            batch_size = self._get_eval_batch_size()
+
+        save_each_sample = self._parse_bool(
+            os.environ.get("EVAL_SAVE_EACH_SAMPLE"), default=(batch_size == 1)
+        )
+        save_every = max(1, int(os.environ.get("EVAL_SAVE_EVERY", 20)))
+
+        out_samples = []
+        with torch.no_grad():
+            total_batches = (len(samples) + batch_size - 1) // batch_size
+            for batch_idx in tqdm(range(total_batches), desc=f"infer (bs={batch_size})"):
+                start = batch_idx * batch_size
+                end = min(start + batch_size, len(samples))
+                current_samples = samples[start:end]
+                current_messages = [sample["messages"] for sample in current_samples]
+                outputs = model.generate_outputs(current_messages)
+                try:
+                    for sample, response in zip(current_samples, outputs):
+                        del sample["messages"]
+                        thinking, parsed_response = self._split_thinking_and_response(response)
+                        sample["thinking"] = thinking
+                        sample["response"] = parsed_response
+                        out_samples.append(sample)
+
+                        if checkpoint_path is not None and save_each_sample:
+                            save_json(checkpoint_path, out_samples)
+                except Exception as e:
+                    from pdb import set_trace
+
+                    set_trace()
+                    print(e)
+
+                if (
+                    checkpoint_path is not None
+                    and not save_each_sample
+                    and ((batch_idx + 1) % save_every == 0 or batch_idx + 1 == total_batches)
+                ):
+                    save_json(checkpoint_path, out_samples)
+                gc.collect()
+        return out_samples
 
 
     def cal_metrics(self,out_samples):
@@ -85,10 +169,12 @@ class VQA_RAD(BaseDataset):
         open_id = []
         for i,out_sample in tqdm(enumerate(out_samples)):
             response = out_sample["response"]
-            if extract_boxed_content(response)!= "None":
-                response = extract_boxed_content(response)
-            elif "<answer>" in response:
-                response = extract(response,"answer")
+            existing_thinking = out_sample.get("thinking", "")
+            thinking, response = self._split_thinking_and_response(response)
+            if not thinking and existing_thinking:
+                thinking = existing_thinking
+            out_samples[i]["thinking"] = thinking
+            out_samples[i]["response"] = response
 
             answer = out_sample["answer"]
             question = out_sample["question"]
