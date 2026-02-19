@@ -3,6 +3,7 @@ import os
 import json
 import gc
 import csv
+import re
 
 from PIL import Image
 from datasets import load_dataset,load_from_disk
@@ -64,8 +65,37 @@ class SLAKE(BaseDataset):
                 self.samples.append(sample)
         return self.samples
 
+    def _parse_bool(self, value, default=False):
+        if value is None:
+            return default
+        return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    def _get_eval_batch_size(self):
+        batch_size_str = os.environ.get("EVAL_BATCH_SIZE")
+        if batch_size_str is not None:
+            try:
+                return max(1, int(batch_size_str))
+            except ValueError:
+                pass
+        return 256 if os.environ.get("use_vllm", "True") == "True" else 1
+
     def construct_messages(self,sample):
         prompt = sample["prompt"]
+        answer = str(sample["answer"]).strip().lower()
+        answer_type = sample["answer_type"]
+        if answer_type == "OPEN":
+            prompt += (
+                "\nRespond in exactly this format:\n"
+                "<think>your brief reasoning</think>\n"
+                "<answer>your concise final answer</answer>"
+            )
+        else:
+            answer_hint = "yes or no" if answer in ["yes", "no"] else "a single short answer"
+            prompt += (
+                "\nRespond in exactly this format:\n"
+                "<think>your brief reasoning</think>\n"
+                f"<answer>{answer_hint}</answer>"
+            )
         image = sample["image"]
         messages = {"prompt":prompt,"image":image}
         sample["messages"] = messages
@@ -73,6 +103,98 @@ class SLAKE(BaseDataset):
         del sample["image"]
         return sample
 
+    def _split_thinking_and_response(self, response):
+        raw_response = "" if response is None else str(response)
+
+        thinking = ""
+        extracted_thinking = extract(raw_response, "think", hard=False).strip()
+        if extracted_thinking:
+            thinking = extracted_thinking
+        elif "</think>" in raw_response:
+            thinking = raw_response.split("</think>", 1)[0].strip()
+            if thinking.startswith("<think>"):
+                thinking = thinking[len("<think>") :].strip()
+        elif "<answer>" in raw_response:
+            thinking = raw_response.split("<answer>", 1)[0].strip()
+            if thinking.startswith("<think>"):
+                thinking = thinking[len("<think>") :].strip()
+
+        parsed_response = raw_response
+        boxed_answer = extract_boxed_content(raw_response)
+        if boxed_answer != "None":
+            parsed_response = boxed_answer
+        else:
+            tagged_answer = extract(raw_response, "answer", hard=False).strip()
+            if tagged_answer:
+                parsed_response = tagged_answer
+            else:
+                marker_match = None
+                for pattern in [
+                    r"final answer is\s*:?",
+                    r"answer is\s*:?",
+                    r"final answer\s*:?",
+                    r"answer\s*:?",
+                ]:
+                    marker_match = re.search(pattern, raw_response, flags=re.IGNORECASE)
+                    if marker_match:
+                        break
+
+                if marker_match:
+                    if not thinking:
+                        thinking = raw_response[: marker_match.start()].strip()
+                    tail = raw_response[marker_match.end() :].strip()
+                    parsed_response = tail.splitlines()[0].strip() if tail else raw_response
+                else:
+                    lines = [line.strip() for line in raw_response.splitlines() if line.strip()]
+                    if len(lines) >= 2 and len(lines[-1]) <= 64:
+                        if not thinking:
+                            thinking = "\n".join(lines[:-1]).strip()
+                        parsed_response = lines[-1]
+
+        return thinking, parsed_response.strip()
+
+    def run(self, samples, model, batch_size=None, checkpoint_path=None):
+        if batch_size is None:
+            batch_size = self._get_eval_batch_size()
+
+        save_each_sample = self._parse_bool(
+            os.environ.get("EVAL_SAVE_EACH_SAMPLE"), default=(batch_size == 1)
+        )
+        save_every = max(1, int(os.environ.get("EVAL_SAVE_EVERY", 20)))
+
+        out_samples = []
+        with torch.no_grad():
+            total_batches = (len(samples) + batch_size - 1) // batch_size
+            for batch_idx in tqdm(range(total_batches), desc=f"infer (bs={batch_size})"):
+                start = batch_idx * batch_size
+                end = min(start + batch_size, len(samples))
+                current_samples = samples[start:end]
+                current_messages = [sample["messages"] for sample in current_samples]
+                outputs = model.generate_outputs(current_messages)
+                try:
+                    for sample, response in zip(current_samples, outputs):
+                        del sample["messages"]
+                        thinking, parsed_response = self._split_thinking_and_response(response)
+                        sample["thinking"] = thinking
+                        sample["response"] = parsed_response
+                        out_samples.append(sample)
+
+                        if checkpoint_path is not None and save_each_sample:
+                            save_json(checkpoint_path, out_samples)
+                except Exception as e:
+                    from pdb import set_trace
+
+                    set_trace()
+                    print(e)
+
+                if (
+                    checkpoint_path is not None
+                    and not save_each_sample
+                    and ((batch_idx + 1) % save_every == 0 or batch_idx + 1 == total_batches)
+                ):
+                    save_json(checkpoint_path, out_samples)
+                gc.collect()
+        return out_samples
 
     def cal_metrics(self,out_samples):
         messages_list = []
@@ -107,15 +229,19 @@ class SLAKE(BaseDataset):
         }
         for i,out_sample in tqdm(enumerate(out_samples)):
             response = out_sample["response"]
-            if extract_boxed_content(response)!= "None":
-                response = extract_boxed_content(response)
-            elif "<answer>" in response:
-                response = extract(response,"answer")
+            existing_thinking = out_sample.get("thinking", "")
+            thinking, response = self._split_thinking_and_response(response)
+            if not thinking and existing_thinking:
+                thinking = existing_thinking
+            out_samples[i]["thinking"] = thinking
+            out_samples[i]["response"] = response
 
             answer = out_sample["answer"]
             question = out_sample["question"]
             lang = out_sample["lang"]
             answer_type = out_sample["answer_type"]
+            answer = str(answer).lower().strip()
+            response = str(response).lower().strip()
 
             if os.environ.get("use_llm_judge","False") == "True":
                 messages = get_compare_messages(question,response,answer)
@@ -168,12 +294,12 @@ class SLAKE(BaseDataset):
 
 
         metrics["total metrics"]["acc"] = metrics["total metrics"]["right"]/metrics["total metrics"]["total"]
-        metrics["open"]["acc"] = metrics["open"]["right"]/metrics["open"]["total"]
-        metrics["close"]["acc"] = metrics["close"]["right"]/metrics["close"]["total"]
+        metrics["open"]["acc"] = metrics["open"]["right"]/metrics["open"]["total"] if metrics["open"]["total"] > 0 else 0
+        metrics["close"]["acc"] = metrics["close"]["right"]/metrics["close"]["total"] if metrics["close"]["total"] > 0 else 0
 
         for metric in metrics["open"]:
             if metric not in ["right","total"]:
-                metrics["open"][metric] = metrics["open"][metric]/metrics["open"]["total"]
+                metrics["open"][metric] = metrics["open"][metric]/metrics["open"]["total"] if metrics["open"]["total"] > 0 else 0
 
         return metrics,out_samples
 

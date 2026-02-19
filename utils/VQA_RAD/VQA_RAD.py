@@ -3,6 +3,7 @@ import os
 import json
 import gc
 import csv
+import re
 
 from PIL import Image
 from datasets import load_dataset
@@ -57,8 +58,18 @@ class VQA_RAD(BaseDataset):
         answer = answer.lower()
         if answer in ["yes","no"]:
             prompt = get_judgement_prompt(question,is_reasoning)
+            prompt += (
+                "\nRespond in exactly this format:\n"
+                "<think>your brief reasoning</think>\n"
+                "<answer>yes or no</answer>"
+            )
         else:
             prompt = get_open_ended_prompt(question,is_reasoning)
+            prompt += (
+                "\nRespond in exactly this format:\n"
+                "<think>your brief reasoning</think>\n"
+                "<answer>your concise final answer</answer>"
+            )
 
 
         messages = {"prompt":prompt,"image":image}
@@ -90,6 +101,29 @@ class VQA_RAD(BaseDataset):
             tagged_answer = extract(raw_response, "answer", hard=False).strip()
             if tagged_answer:
                 parsed_response = tagged_answer
+            else:
+                marker_match = None
+                for pattern in [
+                    r"final answer is\s*:?",
+                    r"answer is\s*:?",
+                    r"final answer\s*:?",
+                    r"answer\s*:?",
+                ]:
+                    marker_match = re.search(pattern, raw_response, flags=re.IGNORECASE)
+                    if marker_match:
+                        break
+
+                if marker_match:
+                    if not thinking:
+                        thinking = raw_response[: marker_match.start()].strip()
+                    tail = raw_response[marker_match.end() :].strip()
+                    parsed_response = tail.splitlines()[0].strip() if tail else raw_response
+                else:
+                    lines = [line.strip() for line in raw_response.splitlines() if line.strip()]
+                    if len(lines) >= 2 and len(lines[-1]) <= 64:
+                        if not thinking:
+                            thinking = "\n".join(lines[:-1]).strip()
+                        parsed_response = lines[-1]
 
         return thinking, parsed_response.strip()
 
@@ -229,6 +263,3 @@ class VQA_RAD(BaseDataset):
             if metric not in ["right","total"]:
                 metrics["open"][metric] = metrics["open"][metric]/metrics["open"]["total"]
         return metrics,out_samples
-
-
-                
