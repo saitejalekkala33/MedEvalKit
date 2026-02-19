@@ -157,7 +157,6 @@ tzdata
 urllib3
 uvicorn
 uvloop
-vllm
 watchfiles
 wcwidth
 webdataset
