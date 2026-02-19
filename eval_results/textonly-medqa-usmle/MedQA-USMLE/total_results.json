@@ -1,0 +1,9 @@
+{
+    "MedQA-USMLE": {
+        "total metrics": {
+            "total": 1273,
+            "right": 866,
+            "acc": 0.6802827965435978
+        }
+    }
+}
