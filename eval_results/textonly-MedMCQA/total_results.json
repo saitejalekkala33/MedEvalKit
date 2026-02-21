@@ -1,0 +1,11 @@
+{
+    "MedMCQA": {
+        "total metrics": {
+            "total": 4183,
+            "right": 2461,
+            "acc": 0.5883337317714559
+        },
+        "unlabeled_examples": 0,
+        "split": "validation"
+    }
+}

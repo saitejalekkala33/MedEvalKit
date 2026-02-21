@@ -1,0 +1,56 @@
+{
+    "total metrics": {
+        "total": 2755,
+        "right": 919,
+        "acc": 0.3335753176043557
+    },
+    "field": {
+        "middle": {
+            "total": 1629,
+            "right": 492,
+            "acc": 0.3020257826887661
+        },
+        "hard": {
+            "total": 217,
+            "right": 41,
+            "acc": 0.1889400921658986
+        },
+        "easy": {
+            "total": 909,
+            "right": 386,
+            "acc": 0.42464246424642466
+        }
+    },
+    "difficulty": {
+        "Traditional Chinese Medicine": {
+            "total": 268,
+            "right": 91,
+            "acc": 0.33955223880597013
+        },
+        "Clinical Medicine": {
+            "total": 1218,
+            "right": 410,
+            "acc": 0.3366174055829228
+        },
+        "Basic Medicine": {
+            "total": 567,
+            "right": 195,
+            "acc": 0.3439153439153439
+        },
+        "Public Health and Preventive Medicine": {
+            "total": 292,
+            "right": 103,
+            "acc": 0.3527397260273973
+        },
+        "Pharmacy": {
+            "total": 278,
+            "right": 94,
+            "acc": 0.3381294964028777
+        },
+        "Stomatology": {
+            "total": 132,
+            "right": 26,
+            "acc": 0.19696969696969696
+        }
+    }
+}
